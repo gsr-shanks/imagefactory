@@ -5,10 +5,18 @@
 # building on RHEL.
 # TODO: If we end up building as part of RDO either remove this for RDO
 # SPEC builds or find a way to detect an RDO build and automagically negate this
-%define include_openstack %{?rhel:0}%{!?rhel:1}
+# UPDATE: F24 dropped the supporting modules we currently use
+# TODO: Refresh/refactor OpenStack support to use newer module and then update below
+%if 0%{?fedora} >= 24 || 0%{?rhel} >= 3
+%define include_openstack 0
+%else
+%define include_openstack 1
+%endif
 
 # For now, do not build this sub RPM - It has bitrotted and needs to be revisited
 %define include_nova_image_builder 0
+
+
 
 %global auto_register_macro_post() # create it if it doesn't already exist as a link \
 # If it is an existing file other than a link, do nothing \
@@ -31,7 +39,7 @@ Release: @RELEASE@%{?dist}
 Source0: http://repos.fedorapeople.org/repos/aeolus/imagefactory/%{version}/tarball/%{name}-%{version}.tar.gz
 License: ASL 2.0
 Group: Applications/System
-URL: http://www.aeolusproject.org/imagefactory.html
+URL: https://github.com/redhat-imaging/imagefactory
 BuildArch: noarch
 %if 0%{?rhel} == 6
 ExcludeArch: i386 ppc64
@@ -46,7 +54,7 @@ Image Factory cloud system image generation tool.
 
 imagefactory allows the creation of system images for multiple virtualization
 and cloud providers from a single template definition. See 
-http://aeolusproject.org/projects/imagefactory for more information.
+https://github.com/redhat-imaging/imagefactory for more information.
 
 %package ovfcommon
 Summary: common utilities to manipulate ovf-related objects
@@ -216,6 +224,14 @@ Requires: tar
 %description Docker
 A Cloud plugin to support Docker
 
+%package HyperV
+Summary: Cloud plugin for HyperV
+License: ASL 2.0
+Requires: qemu-img
+
+%description HyperV
+A Cloud plugin to support HyperV
+
 %prep
 %setup -q
 
@@ -311,6 +327,11 @@ rm -rf  %{buildroot}%{python_sitelib}/imagefactory_plugins/Nova
 %postun Docker
 %auto_register_macro_postun Docker
 
+%post HyperV
+%auto_register_macro_post HyperV
+%postun HyperV
+%auto_register_macro_postun HyperV
+
 %files
 %doc COPYING
 %dir %{python_sitelib}/imagefactory_plugins
@@ -384,7 +405,42 @@ rm -rf  %{buildroot}%{python_sitelib}/imagefactory_plugins/Nova
 %dir %{python_sitelib}/imagefactory_plugins/Docker
 %{python_sitelib}/imagefactory_plugins/Docker/*
 
+%files HyperV
+%dir %{python_sitelib}/imagefactory_plugins/HyperV
+%{python_sitelib}/imagefactory_plugins/HyperV/*
+
 %changelog
+* Wed Jun 15 2016 Ian McLeod <imcleod@redhat.com> - 1.1.9-2
+- remove xattr saving in Docker tar file creation
+
+* Tue May 31 2016 Ian McLeod <imcleod@redhat.com> - 1.1.9-1
+- Upstream release 1.1.9
+  - Add HyperV Vagrant support
+  - enhance vSphere and VMWare Fusion support
+
+* Thu Mar 24 2016 Ian McLeod <imcleod@redhat.com> - 1.1.8-4
+- add new docker base image version options
+- fix koji issue when ICICLE generation is disabled
+
+* Thu Mar 17 2016 Ian McLeod <imcleod@redhat.com> - 1.1.8-3
+- temporarily disable OpenShift and RAX for F24
+
+* Wed Mar 16 2016 Ian McLeod <imcleod@redhat.com> - 1.1.8-2
+- enable non-x86_64 Docker base image builds
+
+* Wed Mar 16 2016 Ian McLeod <imcleod@redhat.com> - 1.1.8-1
+- Upstream release 1.1.8
+- systemd support
+- docker base image updates
+- significant EC2 updates for regions and instance types
+- VMWare fusion vagrant box support
+
+* Thu Feb 04 2016 Fedora Release Engineering <releng@fedoraproject.org> - 1.1.7-3
+- Rebuilt for https://fedoraproject.org/wiki/Fedora_24_Mass_Rebuild
+
+* Wed Jun 17 2015 Fedora Release Engineering <rel-eng@lists.fedoraproject.org> - 1.1.7-2
+- Rebuilt for https://fedoraproject.org/wiki/Fedora_23_Mass_Rebuild
+
 * Wed Jan 7 2015 Ian McLeod <imcleod@redhat.com> - 1.1.7-1
 - Upstream release 1.1.7
 - Vagrant box support added to OVA plugin

@@ -27,7 +27,7 @@ import tempfile
 import subprocess
 from stat import *
 from imgfac.PersistentImageManager import PersistentImageManager
-from imgfac.FactoryUtils import check_qcow_size, disk_image_capacity
+from imgfac.FactoryUtils import check_qcow_size, disk_image_capacity, parameter_cast_to_bool
 from imgfac.ImageFactoryException import ImageFactoryException
 # Yes - again with two different XML libraries
 # lxml.etree is required by Oz and is what I used to rebuild the
@@ -35,6 +35,9 @@ from imgfac.ImageFactoryException import ImageFactoryException
 # TODO: Unify these
 import lxml.etree
 import datetime
+# These tend to be quite large - factor them out as separate files to
+# keep this source file a reasonable size
+from HyperVOVFDescriptor import HyperVOVFDescriptor
 
 
 class RHEVOVFDescriptor(object):
@@ -378,7 +381,11 @@ class VsphereOVFDescriptor(object):
                  vsphere_product_name,
                  vsphere_product_vendor_name,
                  vsphere_product_version,
-                 vsphere_virtual_system_type):
+                 vsphere_virtual_system_type,
+                 vsphere_nested_virt,
+                 vsphere_cdrom,
+                 vsphere_scsi_controller_type,
+                 vsphere_network_controller_type):
         self.disk = disk
         self.ovf_cpu_count = ovf_cpu_count
         self.ovf_memory_mb = ovf_memory_mb
@@ -386,6 +393,10 @@ class VsphereOVFDescriptor(object):
         self.vsphere_product_vendor_name = vsphere_product_vendor_name
         self.vsphere_product_version = vsphere_product_version
         self.vsphere_virtual_system_type = vsphere_virtual_system_type
+        self.vsphere_nested_virt = vsphere_nested_virt
+        self.vsphere_cdrom = vsphere_cdrom
+        self.vsphere_scsi_controller_type = vsphere_scsi_controller_type
+        self.vsphere_network_controller_type = vsphere_network_controller_type
 
     def generate_ovf_xml(self):
         etroot = ElementTree.Element('Envelope')
@@ -401,7 +412,7 @@ class VsphereOVFDescriptor(object):
         etref = ElementTree.Element('References')
 
         etfile = ElementTree.Element('File')
-        etfile.set('ovf:href', 'disk.img')
+        etfile.set('ovf:href', 'disk.vmdk')
         etfile.set('ovf:id', 'file1')
         etfile.set('ovf:size', str(self.disk.vol_size))
 
@@ -545,7 +556,8 @@ class VsphereOVFDescriptor(object):
         etinstid.text = '3'
         etitem.append(etinstid)
         etressubtype = ElementTree.Element('rasd:ResourceSubType')
-        etressubtype.text = 'lsilogic'
+        # Known correct types here are "lsilogic" and "VirtualSCSI"
+        etressubtype.text = self.vsphere_scsi_controller_type
         etitem.append(etressubtype)
         etrestype = ElementTree.Element('rasd:ResourceType')
         etrestype.text = '6'
@@ -589,7 +601,7 @@ class VsphereOVFDescriptor(object):
         etconn.text = 'VM Network'
         etitem.append(etconn)
         etdesc = ElementTree.Element('rasd:Description')
-        etdesc.text = 'E1000 ethernet adapter on "VM Network"'
+        etdesc.text = '%s ethernet adapter on "VM Network"' % (self.vsphere_network_controller_type)
         etitem.append(etdesc)
         etelemname = ElementTree.Element('rasd:ElementName')
         etelemname.text = 'Network adapter 1'
@@ -598,7 +610,8 @@ class VsphereOVFDescriptor(object):
         etinstid.text = '5'
         etitem.append(etinstid)
         etressubtype = ElementTree.Element('rasd:ResourceSubType')
-        etressubtype.text = 'E1000'
+        # Known working values are E1000 and VmxNet3
+        etressubtype.text = self.vsphere_network_controller_type
         etitem.append(etressubtype)
         etrestype = ElementTree.Element('rasd:ResourceType')
         etrestype.text = '10'
@@ -615,6 +628,76 @@ class VsphereOVFDescriptor(object):
         etitem.append(etconfig)
         etvirthwsec.append(etitem)
 
+        if self.vsphere_cdrom:
+            # IDE controller for CDROM
+            # <Item>
+            #  <rasd:Address>0</rasd:Address>
+            #  <rasd:Description>IDE Controller</rasd:Description>
+            #  <rasd:ElementName>VirtualIDEController 0</rasd:ElementName>
+            #  <rasd:InstanceID>6</rasd:InstanceID>
+            #  <rasd:ResourceType>5</rasd:ResourceType>
+            # </Item>
+            etitem = ElementTree.Element('Item')
+            etaddr = ElementTree.Element('rasd:Address')
+            etaddr.text = '0'
+            etitem.append(etaddr)
+            etdesc = ElementTree.Element('rasd:Description')
+            etdesc.text = 'IDE Controller'
+            etitem.append(etdesc)
+            etelemname = ElementTree.Element('rasd:ElementName')
+            etelemname.text = 'VirtualIDEController 0'
+            etitem.append(etelemname)
+            etinstid = ElementTree.Element('rasd:InstanceID')
+            etinstid.text = '6'
+            etitem.append(etinstid)
+            etrestype = ElementTree.Element('rasd:ResourceType')
+            etrestype.text = '5'
+            etitem.append(etrestype)
+            etvirthwsec.append(etitem)
+            # end IDE controller
+
+            # CDROM - an unattached but still present CDROM device
+            # <Item ovf:required="false">
+            #  <rasd:AddressOnParent>0</rasd:AddressOnParent>
+            #  <rasd:AutomaticAllocation>false</rasd:AutomaticAllocation>
+            #  <rasd:ElementName>CD-ROM 1</rasd:ElementName>
+            #  <rasd:InstanceID>7</rasd:InstanceID>
+            #  <rasd:Parent>6</rasd:Parent>
+            #  <rasd:ResourceSubType>vmware.cdrom.atapi</rasd:ResourceSubType>
+            #  <rasd:ResourceType>15</rasd:ResourceType>
+            # </Item>
+            etitem = ElementTree.Element('Item')
+            etitem.set('ovf:required', 'false')
+            etaddronparent = ElementTree.Element('rasd:AddressOnParent')
+            etaddronparent.text = '0'
+            etitem.append(etaddronparent)
+            etautoalloc = ElementTree.Element('rasd:AutomaticAllocation')
+            etautoalloc.text = 'false'
+            etitem.append(etautoalloc)
+            etelemname = ElementTree.Element('rasd:ElementName')
+            etelemname.text = 'CD-ROM 1'
+            etitem.append(etelemname)
+            etinstid = ElementTree.Element('rasd:InstanceID')
+            etinstid.text = '7'
+            etitem.append(etinstid)
+            etparent = ElementTree.Element('rasd:Parent')
+            etparent.text = '6'
+            etitem.append(etparent)
+            etsubtype = ElementTree.Element('rasd:ResourceSubType')
+            etsubtype.text = 'vmware.cdrom.atapi'
+            etitem.append(etsubtype)
+            etrestype = ElementTree.Element('rasd:ResourceType')
+            etrestype.text = '15'
+            etitem.append(etrestype)
+            etvirthwsec.append(etitem)
+            # end CDROM
+
+        if self.vsphere_nested_virt:
+            etconfig = ElementTree.Element('vmw:Config')
+            etconfig.set('ovf:required', 'false')
+            etconfig.set('vmw:key', 'nestedHVEnabled')
+            etconfig.set('vmw:value', 'true')
+            etvirthwsec.append(etconfig)
 
         etvirtsys.append(etvirthwsec)
 
@@ -660,12 +743,16 @@ class OVFPackage(object):
     def delete(self):
         rmtree(self.path, ignore_errors=True)
 
+    def write_ovf_xml_to_file(self, path):
+        # Thanks to HyperV we want to override this in at least one case
+        # put the default here and override as needed
+        ovf_xml = self.ovf_descriptor.generate_ovf_xml()
+        ovf_xml.write(path)
+
     def sync(self):
         '''Copy disk image to path, regenerate OVF descriptor'''
         self.copy_disk()
         self.ovf_descriptor = self.new_ovf_descriptor()
-
-        ovf_xml = self.ovf_descriptor.generate_ovf_xml()
 
         try:
             os.makedirs(os.path.dirname(self.ovf_path))
@@ -673,8 +760,7 @@ class OVFPackage(object):
             if "File exists" not in e:
                 raise
 
-        ovf_xml.write(self.ovf_path)
-
+        self.write_ovf_xml_to_file(self.ovf_path)
 
     def _gzip_ova(self, ovapath):
         # TODO: Move this to FactoryUtils and use it consistently in other plugins
@@ -735,6 +821,65 @@ class OVFPackage(object):
             self._gzip_ova(ovapath)
 
         return ovapath
+
+class HyperVOVFPackage(OVFPackage):
+    def __init__(self, disk, base_image, path=None, hyperv_vagrant=True,
+                 vagrant_sync_directory = "/vagrant",
+                 ovf_name="vagrantbox",
+                 ovf_cpu_count="1",
+                 ovf_memory_mb="1024"):
+
+        super(HyperVOVFPackage, self).__init__(disk, path)
+        self.vagrant = hyperv_vagrant # Set to false to omit Vagrant metadata and produce "pure" OVA
+        self.vagrant_sync_directory = vagrant_sync_directory
+        self.disk = disk
+        self.ovf_name = ovf_name
+        self.ovf_cpu_count = ovf_cpu_count
+        self.ovf_memory_mb = ovf_memory_mb
+
+        self.ovf_disk_dir = os.path.join(self.path, "Virtual Hard Disks")
+        self.disk_filename = os.path.join(self.ovf_disk_dir, "disk.vhd")
+        self.ovf_path = os.path.join(self.path, "Virtual Machines", "vm.XML")
+
+    def new_ovf_descriptor(self):
+        return HyperVOVFDescriptor(self.ovf_name,
+                                   self.ovf_cpu_count,
+                                   self.ovf_memory_mb)
+
+    def copy_disk(self):
+        os.makedirs(self.ovf_disk_dir)
+        copyfile_sparse(self.disk, self.disk_filename)
+
+    def write_ovf_xml_to_file(self, path):
+        meta=open(path,"w")
+        meta.write(self.ovf_descriptor.generate_ovf_xml())
+        meta.close()
+
+    def sync(self):
+        super(HyperVOVFPackage, self).sync()
+        if self.vagrant:
+            metadata_json = '{"provider": "hyperv"}'
+            metadata_json_path = os.path.join(self.path, "metadata.json")
+            mj = open(metadata_json_path, 'w')
+            mj.write(metadata_json)
+            mj.close()
+
+            # For consistency, make this the sync directory and use rsync
+            # but disable because I can't seem to make it work and don't want the
+            # default experience to be a failure message at startup. Can be
+            # re-enabled in local Vagrantfile
+            vagrantfile = '''Vagrant.configure("2") do |config|
+  config.vm.synced_folder ".", "%s", type: "rsync", disabled: "true"
+end
+''' % (self.vagrant_sync_directory)
+            vagrantfile_path = os.path.join(self.path, "Vagrantfile")
+            vf = open(vagrantfile_path, 'w')
+            vf.write(vagrantfile)
+            vf.close()
+
+
+    def make_ova_package(self):
+        return super(HyperVOVFPackage, self).make_ova_package(gzip=True)
 
 
 class RHEVOVFPackage(OVFPackage):
@@ -803,10 +948,14 @@ class VsphereOVFPackage(OVFPackage):
                  vsphere_product_name="Product Name",
                  vsphere_product_vendor_name="Vendor Name",
                  vsphere_product_version="1.0",
-                 vsphere_virtual_system_type="vmx-07 vmx-08"):
+                 vsphere_virtual_system_type="vmx-07 vmx-08",
+                 vsphere_nested_virt="false",
+                 vsphere_cdrom="false",
+                 vsphere_scsi_controller_type="lsilogic",
+                 vsphere_network_controller_type="E1000"):
         disk = VsphereDisk(disk, base_image.data)
         super(VsphereOVFPackage, self).__init__(disk, path)
-        self.disk_path = os.path.join(self.path, "disk.img")
+        self.disk_path = os.path.join(self.path, "disk.vmdk")
         self.ovf_path  = os.path.join(self.path, "desc.ovf")
 
         self.ovf_cpu_count = ovf_cpu_count
@@ -815,6 +964,10 @@ class VsphereOVFPackage(OVFPackage):
         self.vsphere_product_vendor_name = vsphere_product_vendor_name
         self.vsphere_product_version = vsphere_product_version
         self.vsphere_virtual_system_type = vsphere_virtual_system_type
+        self.vsphere_nested_virt = parameter_cast_to_bool(vsphere_nested_virt)
+        self.vsphere_cdrom = parameter_cast_to_bool(vsphere_cdrom)
+        self.vsphere_scsi_controller_type = vsphere_scsi_controller_type
+        self.vsphere_network_controller_type = vsphere_network_controller_type
 
     def new_ovf_descriptor(self):
         return VsphereOVFDescriptor(self.disk,
@@ -823,7 +976,11 @@ class VsphereOVFPackage(OVFPackage):
                                     self.vsphere_product_name,
                                     self.vsphere_product_vendor_name,
                                     self.vsphere_product_version,
-                                    self.vsphere_virtual_system_type)
+                                    self.vsphere_virtual_system_type,
+                                    self.vsphere_nested_virt,
+                                    self.vsphere_cdrom,
+                                    self.vsphere_scsi_controller_type,
+                                    self.vsphere_network_controller_type)
 
     def copy_disk(self):
         copyfile_sparse(self.disk.path, self.disk_path)
@@ -958,10 +1115,10 @@ scsi0:0.deviceType = "disk"
 scsi0:0.fileName = "%(name)s-disk1.vmdk"
 scsi0:0.mode = "persistent"
 scsi0:0.writeThrough = "false"
-scsi0.virtualDev = "lsilogic"
+scsi0.virtualDev = "%(scsi_controller)s"
 scsi0.present = "TRUE"
 ethernet0.present = "TRUE"
-ethernet0.virtualDev = "e1000"
+ethernet0.virtualDev = "%(network_controller)s"
 ethernet0.connectionType = "bridged"
 ethernet0.startConnected = "TRUE"
 ethernet0.addressType = "generated"
@@ -977,19 +1134,26 @@ ethernet0.pciSlotNumber = "32"
 cleanShutdown = "TRUE"
 softPowerOff = "FALSE"
 tools.syncTime = "FALSE"
+vhv.enable = "%(nested_virt)s"
 '''
 
     def __init__(self, disk, path=None, base_image=None, 
                  ovf_name=None,
                  ovf_cpu_count="1",
                  ovf_memory_mb="1024",
+                 fusion_scsi_controller_type="lsilogic",
+                 fusion_network_controller_type="e1000", 
+                 fusion_nested_virt="false",
                  vagrant_sync_directory = "/vagrant"):
         super(VMWareFusionVagrantOVFPackage, self).__init__(disk,path)
         self.vagrant_sync_directory = vagrant_sync_directory
         if not ovf_name:
             ovf_name="vagrant-fusion-box"
         self.ovf_name = ovf_name
-        format_dict = { 'name': ovf_name, 'cpu_count': int(ovf_cpu_count), 'memory_mb': int(ovf_memory_mb) }
+        nested_virt = str(parameter_cast_to_bool(fusion_nested_virt)).upper()
+        format_dict = { 'name': ovf_name, 'cpu_count': int(ovf_cpu_count), 'memory_mb': int(ovf_memory_mb),
+                        'nested_virt': nested_virt, 'network_controller': fusion_network_controller_type,
+                        'scsi_controller': fusion_scsi_controller_type }
         self.vmx_content = self.VMXTEMPLATE % format_dict
         # The base image can be either raw or qcow2 - determine size and save for later
         self.disk_size=disk_image_capacity(base_image.data)
